@@ -27,6 +27,12 @@ from utils import load_agencies, save_agencies, random_delay
 
 console = Console(legacy_windows=False)
 
+# Concurrency limit for detail page fetches
+MAX_CONCURRENT_DETAILS = 3
+# Retry config for detail page fetches
+DETAIL_MAX_RETRIES = 2
+DETAIL_RETRY_DELAY = 3.0
+
 
 def parse_rating(raw: str) -> float | None:
     if not raw:
@@ -43,7 +49,7 @@ def parse_review_count(raw: str) -> int | None:
         return None
     m = re.search(r"(\d[\d\s]*)", raw)
     if m:
-        return int(m.group(1).replace(" ", ""))
+        return int(m.group(1).replace(" ", "").replace("\u202f", ""))
     return None
 
 
@@ -57,22 +63,47 @@ def parse_opening_hours_text(raw: str) -> dict[str, str]:
     return hours
 
 
+def extract_gbp_photo_count(aria_or_text: str) -> int | None:
+    """Extract photo count from Google Maps photo button label."""
+    if not aria_or_text:
+        return None
+    m = re.search(r"(\d[\d\s]*)\s*photo", aria_or_text, re.IGNORECASE)
+    if m:
+        return int(m.group(1).replace(" ", "").replace("\u202f", ""))
+    return None
+
+
+def extract_gbp_category(raw: str) -> str | None:
+    """Clean up a GBP category string."""
+    if not raw:
+        return None
+    cleaned = raw.strip()
+    return cleaned if cleaned else None
+
+
 async def _accept_google_consent(page) -> None:
     """Click through Google's consent page if present."""
     try:
-        # Consent page is on consent.google.com or has an accept button
         for selector in [
+            "button[aria-label*='Tout accepter']",
+            "button[aria-label*='Accept all']",
             "button[aria-label*='Accept']",
             "button[aria-label*='Accepter']",
-            "button[aria-label*='Tout accepter']",
+            # Text-based fallback: look for buttons with consent text
             "form[action*='consent'] button",
+            # GDPR-style cookie banners
+            "button:has-text('Tout accepter')",
+            "button:has-text('Accept all')",
         ]:
-            btn = await page.query_selector(selector)
-            if btn:
-                await btn.click()
-                await page.wait_for_load_state("networkidle", timeout=10_000)
-                console.log("[cyan]Google consent accepted[/cyan]")
-                return
+            try:
+                btn = await page.query_selector(selector)
+                if btn and await btn.is_visible():
+                    await btn.click()
+                    await page.wait_for_load_state("networkidle", timeout=10_000)
+                    console.log("[cyan]Google consent accepted[/cyan]")
+                    return
+            except Exception:
+                continue
     except Exception:
         pass
 
@@ -83,6 +114,34 @@ def _grid_points(lat_min: float, lat_max: float, lng_min: float, lng_max: float,
     lats = [lat_min + (lat_max - lat_min) * i / (rows - 1) for i in range(rows)]
     lngs = [lng_min + (lng_max - lng_min) * j / (cols - 1) for j in range(cols)]
     return [(lat, lng) for lat in lats for lng in lngs]
+
+
+async def _scroll_results_feed(page, results_pane) -> None:
+    """Scroll the results feed until end-of-list or no new results appear."""
+    prev_count = 0
+    stable_streak = 0
+    for scroll_i in range(50):
+        await results_pane.evaluate("el => el.scrollBy(0, 800)")
+        await random_delay(0.8, 1.5)
+
+        items = await page.query_selector_all("div[role='feed'] > div > div > a")
+        new_count = len(items)
+
+        # Multiple end-of-list markers (Google changes these)
+        for end_sel in ["span.HlvSq", "p.fontBodyMedium > span > span"]:
+            end_marker = await page.query_selector(end_sel)
+            if end_marker:
+                end_text = await end_marker.inner_text()
+                if "résultat" in end_text.lower() or "end of" in end_text.lower() or "fin" in end_text.lower():
+                    return
+
+        if new_count == prev_count:
+            stable_streak += 1
+            if stable_streak >= 4:
+                break
+        else:
+            stable_streak = 0
+        prev_count = new_count
 
 
 async def _collect_hrefs_at_point(session: BrowserSession, page, lat: float, lng: float,
@@ -98,30 +157,19 @@ async def _collect_hrefs_at_point(session: BrowserSession, page, lat: float, lng
 
     results_pane = await page.query_selector("div[role='feed']")
     if not results_pane:
-        return []
+        # Maybe the page hasn't loaded — wait a bit and retry
+        await random_delay(2.0, 3.0)
+        results_pane = await page.query_selector("div[role='feed']")
+        if not results_pane:
+            console.log(f"[yellow]No results feed at ({lat:.4f},{lng:.4f})[/yellow]")
+            return []
 
     try:
         await page.wait_for_selector("div[role='feed'] > div > div > a", timeout=8_000)
     except Exception:
         pass
 
-    prev_count = 0
-    stable_streak = 0
-    for _ in range(40):
-        await results_pane.evaluate("el => { el.scrollTop = el.scrollHeight; }")
-        await random_delay(1.0, 1.8)
-        items = await page.query_selector_all("div[role='feed'] > div > div > a")
-        new_count = len(items)
-        end_marker = await page.query_selector("span.HlvSq")
-        if end_marker:
-            break
-        if new_count == prev_count:
-            stable_streak += 1
-            if stable_streak >= 3:
-                break
-        else:
-            stable_streak = 0
-        prev_count = new_count
+    await _scroll_results_feed(page, results_pane)
 
     links = await page.query_selector_all("div[role='feed'] > div > div > a")
     new_hrefs = []
@@ -133,64 +181,142 @@ async def _collect_hrefs_at_point(session: BrowserSession, page, lat: float, lng
     return new_hrefs
 
 
-async def _fetch_place_detail(session: BrowserSession, href: str) -> Agency | None:
-    """Visit a Google Maps place page and extract agency data."""
-    detail_page = await session.new_page()
-    try:
-        await session.navigate(detail_page, href, wait_until="networkidle")
+async def _fetch_place_detail(session: BrowserSession, href: str,
+                               semaphore: asyncio.Semaphore | None = None) -> Agency | None:
+    """Visit a Google Maps place page and extract agency data, with retry."""
+    sem = semaphore or asyncio.Semaphore(1)
 
-        name_el = await detail_page.query_selector("h1")
-        if not name_el:
-            return None
-        name = (await name_el.inner_text()).strip()
+    for attempt in range(1, DETAIL_MAX_RETRIES + 1):
+        async with sem:
+            detail_page = await session.new_page()
+            try:
+                await session.navigate(detail_page, href, wait_until="networkidle")
 
-        addr_el = await detail_page.query_selector("button[data-item-id='address']")
-        address = (await addr_el.inner_text()).strip() if addr_el else ""
+                name_el = await detail_page.query_selector("h1")
+                if not name_el:
+                    if attempt < DETAIL_MAX_RETRIES:
+                        console.log(f"[yellow]No h1 found (attempt {attempt}), retrying: {href[:80]}[/yellow]")
+                        await detail_page.close()
+                        await random_delay(DETAIL_RETRY_DELAY, DETAIL_RETRY_DELAY + 2)
+                        continue
+                    return None
+                name = (await name_el.inner_text()).strip()
 
-        phone_el = await detail_page.query_selector("button[data-item-id^='phone:tel:']")
-        phone_raw = await phone_el.inner_text() if phone_el else None
-        phone = normalize_phone(phone_raw)
+                # Address
+                addr_el = await detail_page.query_selector("button[data-item-id='address']")
+                address = (await addr_el.inner_text()).strip() if addr_el else ""
 
-        web_el = await detail_page.query_selector("a[data-item-id='authority']")
-        website = await web_el.get_attribute("href") if web_el else None
+                # Phone
+                phone_el = await detail_page.query_selector("button[data-item-id^='phone:tel:']")
+                phone_raw = await phone_el.inner_text() if phone_el else None
+                phone = normalize_phone(phone_raw)
 
-        rating = None
-        rating_img = await detail_page.query_selector(
-            "span[role='img'][aria-label*='toile'], span[role='img'][aria-label*='star']"
-        )
-        if rating_img:
-            aria = await rating_img.get_attribute("aria-label") or ""
-            m = re.search(r"([\d][,.][\d])", aria)
-            rating = parse_rating(m.group(1)) if m else None
+                # Website
+                web_el = await detail_page.query_selector("a[data-item-id='authority']")
+                website = await web_el.get_attribute("href") if web_el else None
 
-        review_count = None
-        review_btn = await detail_page.query_selector("button[aria-label*='avis'], button[aria-label*='review']")
-        if review_btn:
-            aria = await review_btn.get_attribute("aria-label") or ""
-            review_count = parse_review_count(aria)
+                # Rating
+                rating = None
+                rating_img = await detail_page.query_selector(
+                    "span[role='img'][aria-label*='toile'], span[role='img'][aria-label*='star']"
+                )
+                if rating_img:
+                    aria = await rating_img.get_attribute("aria-label") or ""
+                    m = re.search(r"([\d][,.][\d])", aria)
+                    rating = parse_rating(m.group(1)) if m else None
 
-        hours_btn = await detail_page.query_selector("div[jsaction*='openhours']")
-        opening_hours = None
-        if hours_btn:
-            opening_hours = parse_opening_hours_text(await hours_btn.inner_text())
+                # Review count
+                review_count = None
+                review_btn = await detail_page.query_selector(
+                    "button[aria-label*='avis'], button[aria-label*='review']"
+                )
+                if review_btn:
+                    aria = await review_btn.get_attribute("aria-label") or ""
+                    review_count = parse_review_count(aria)
 
-        return Agency(
-            name=name,
-            address=address,
-            source="google_maps",
-            phone=phone,
-            website=website,
-            google_maps_url=href,
-            google_rating=rating,
-            google_review_count=review_count,
-            opening_hours=opening_hours,
-            network_affiliation=parse_network_affiliation(name),
-        )
-    except Exception as e:
-        console.log(f"[yellow]Detail error: {e}[/yellow]")
-        return None
-    finally:
-        await detail_page.close()
+                # Opening hours
+                hours_btn = await detail_page.query_selector("div[jsaction*='openhours']")
+                opening_hours = None
+                if hours_btn:
+                    opening_hours = parse_opening_hours_text(await hours_btn.inner_text())
+
+                # --- GBP enrichment data ---
+
+                # Category (e.g., "Agent immobilier")
+                gbp_category = None
+                cat_el = await detail_page.query_selector("button[jsaction*='category']")
+                if cat_el:
+                    gbp_category = extract_gbp_category(await cat_el.inner_text())
+                if not gbp_category:
+                    # Fallback: category often in a span below the name
+                    cat_span = await detail_page.query_selector("span.DkEaL")
+                    if cat_span:
+                        gbp_category = extract_gbp_category(await cat_span.inner_text())
+
+                # Photo count
+                gbp_photo_count = None
+                photo_btn = await detail_page.query_selector(
+                    "button[aria-label*='photo'], button[aria-label*='Photo']"
+                )
+                if photo_btn:
+                    photo_aria = await photo_btn.get_attribute("aria-label") or ""
+                    gbp_photo_count = extract_gbp_photo_count(photo_aria)
+
+                # GBP posts (updates tab)
+                gbp_has_posts = None
+                posts_tab = await detail_page.query_selector(
+                    "button[data-tab-id='updates'], button[aria-label*='Posts'], button[aria-label*='Actualités']"
+                )
+                if posts_tab:
+                    gbp_has_posts = True
+
+                agency = Agency(
+                    name=name,
+                    address=address,
+                    source="google_maps",
+                    phone=phone,
+                    website=website,
+                    google_maps_url=href,
+                    google_rating=rating,
+                    google_review_count=review_count,
+                    opening_hours=opening_hours,
+                    network_affiliation=parse_network_affiliation(name),
+                    gbp_category=gbp_category,
+                    gbp_photo_count=gbp_photo_count,
+                    gbp_has_posts=gbp_has_posts,
+                )
+
+                return agency
+
+            except Exception as e:
+                console.log(f"[yellow]Detail error (attempt {attempt}/{DETAIL_MAX_RETRIES}): {e}[/yellow]")
+                if attempt < DETAIL_MAX_RETRIES:
+                    await detail_page.close()
+                    await random_delay(DETAIL_RETRY_DELAY, DETAIL_RETRY_DELAY + 2)
+                    continue
+                return None
+            finally:
+                try:
+                    await detail_page.close()
+                except Exception:
+                    pass
+
+    return None
+
+
+async def _fetch_details_batch(session: BrowserSession, hrefs: list[str],
+                                max_concurrent: int = MAX_CONCURRENT_DETAILS) -> list[Agency]:
+    """Fetch place details concurrently with a bounded semaphore."""
+    semaphore = asyncio.Semaphore(max_concurrent)
+    tasks = [_fetch_place_detail(session, href, semaphore=semaphore) for href in hrefs]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    agencies = []
+    for r in results:
+        if isinstance(r, Agency):
+            agencies.append(r)
+        elif isinstance(r, Exception):
+            console.log(f"[yellow]Batch detail exception: {r}[/yellow]")
+    return agencies
 
 
 async def _scrape_zone(session: BrowserSession, zone_query: str, zone_slug: str,
@@ -242,11 +368,9 @@ async def _scrape_zone(session: BrowserSession, zone_query: str, zone_slug: str,
 
     console.log(f"[cyan]{zone_slug}[/cyan]: {len(all_hrefs)} unique places found, fetching details...")
 
-    for href in all_hrefs:
-        agency = await _fetch_place_detail(session, href)
-        if agency:
-            agencies.append(agency)
-        await random_delay(1.0, 2.0)
+    # Fetch details concurrently in batches
+    agencies = await _fetch_details_batch(session, all_hrefs)
+    console.log(f"[cyan]{zone_slug}[/cyan]: {len(agencies)}/{len(all_hrefs)} details extracted")
 
     return agencies
 
