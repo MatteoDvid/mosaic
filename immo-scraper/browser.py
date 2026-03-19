@@ -1,12 +1,31 @@
 from __future__ import annotations
+import os
 import random
 from typing import AsyncGenerator
+from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from playwright_stealth import stealth_async
 
 from config import USER_AGENTS, NAV_DELAY_MIN, NAV_DELAY_MAX
 from utils import random_delay
+
+
+def _detect_proxy() -> dict | None:
+    """Detect HTTP proxy from environment and return Playwright proxy config."""
+    proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or \
+                os.environ.get("https_proxy") or os.environ.get("http_proxy")
+    if not proxy_url:
+        return None
+    parsed = urlparse(proxy_url)
+    if not parsed.hostname:
+        return None
+    config: dict = {"server": f"http://{parsed.hostname}:{parsed.port}"}
+    if parsed.username:
+        config["username"] = parsed.username
+    if parsed.password:
+        config["password"] = parsed.password
+    return config
 
 
 class BrowserSession:
@@ -35,11 +54,14 @@ class BrowserSession:
                 "--disable-dev-shm-usage",
             ],
         )
+        proxy_config = _detect_proxy()
         self._context = await self._browser.new_context(
             user_agent=self._user_agent,
             viewport={"width": 1366, "height": 768},
             locale="fr-FR",
             timezone_id="Europe/Paris",
+            ignore_https_errors=True if proxy_config else False,
+            **({"proxy": proxy_config} if proxy_config else {}),
         )
         return self
 

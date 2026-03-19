@@ -215,24 +215,20 @@ async def _fetch_place_detail(session: BrowserSession, href: str,
                 web_el = await detail_page.query_selector("a[data-item-id='authority']")
                 website = await web_el.get_attribute("href") if web_el else None
 
-                # Rating
+                # Rating + review count from span[role='img'] elements
                 rating = None
-                rating_img = await detail_page.query_selector(
-                    "span[role='img'][aria-label*='toile'], span[role='img'][aria-label*='star']"
-                )
-                if rating_img:
-                    aria = await rating_img.get_attribute("aria-label") or ""
-                    m = re.search(r"([\d][,.][\d])", aria)
-                    rating = parse_rating(m.group(1)) if m else None
-
-                # Review count
                 review_count = None
-                review_btn = await detail_page.query_selector(
-                    "button[aria-label*='avis'], button[aria-label*='review']"
-                )
-                if review_btn:
-                    aria = await review_btn.get_attribute("aria-label") or ""
-                    review_count = parse_review_count(aria)
+                rating_imgs = await detail_page.query_selector_all("span[role='img']")
+                for img_el in rating_imgs:
+                    aria = await img_el.get_attribute("aria-label") or ""
+                    # Match "5,0 étoiles" or "4.8 stars" (the first one without "avis" is the main rating)
+                    if ("toile" in aria or "star" in aria) and rating is None:
+                        m = re.search(r"([\d][,.][\d])", aria)
+                        if m:
+                            rating = parse_rating(m.group(1))
+                    # Match "110 avis" or "42 reviews"
+                    if ("avis" in aria or "review" in aria) and review_count is None:
+                        review_count = parse_review_count(aria)
 
                 # Opening hours
                 hours_btn = await detail_page.query_selector("div[jsaction*='openhours']")
@@ -306,16 +302,21 @@ async def _fetch_place_detail(session: BrowserSession, href: str,
 
 async def _fetch_details_batch(session: BrowserSession, hrefs: list[str],
                                 max_concurrent: int = MAX_CONCURRENT_DETAILS) -> list[Agency]:
-    """Fetch place details concurrently with a bounded semaphore."""
-    semaphore = asyncio.Semaphore(max_concurrent)
-    tasks = [_fetch_place_detail(session, href, semaphore=semaphore) for href in hrefs]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    """Fetch place details in small batches to avoid overwhelming the browser."""
     agencies = []
-    for r in results:
-        if isinstance(r, Agency):
-            agencies.append(r)
-        elif isinstance(r, Exception):
-            console.log(f"[yellow]Batch detail exception: {r}[/yellow]")
+    total = len(hrefs)
+    for i in range(0, total, max_concurrent):
+        batch = hrefs[i:i + max_concurrent]
+        semaphore = asyncio.Semaphore(max_concurrent)
+        tasks = [_fetch_place_detail(session, href, semaphore=semaphore) for href in batch]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, Agency):
+                agencies.append(r)
+            elif isinstance(r, Exception):
+                console.log(f"[yellow]Batch detail exception: {r}[/yellow]")
+        done = min(i + max_concurrent, total)
+        console.log(f"[dim]  details: {done}/{total} processed, {len(agencies)} extracted[/dim]")
     return agencies
 
 
