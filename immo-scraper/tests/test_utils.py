@@ -10,6 +10,7 @@ from utils import (
     save_agencies,
 )
 from models import Agency
+from scraper.lead_scorer import compute_lead_score, suggest_offers, OFFER_PHOTO, OFFER_SITE
 
 
 def test_extract_emails_finds_mailto_links():
@@ -80,6 +81,65 @@ def test_deduplicate_cross_source_no_match_different_address():
     gm     = Agency(name="Orpi Corvisart", address="5 rue Corvisart 75013 Paris", source="google_maps")
     result = deduplicate_agencies([sirene, gm])
     assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# Lead scorer tests
+# ---------------------------------------------------------------------------
+
+def test_lead_score_max_for_weak_agency():
+    """Agency with no data at all should get max score (100)."""
+    a = Agency(name="Weak Agency", address="Paris", source="google_maps")
+    score, details = compute_lead_score(a)
+    assert score == 100.0
+
+
+def test_lead_score_low_for_strong_agency():
+    """Agency with strong digital presence should score low."""
+    a = Agency(
+        name="Strong Agency", address="Paris", source="google_maps",
+        google_rating=4.8, google_review_count=50,
+        site_quality="modern", has_blog=True, is_mobile_friendly=True,
+        gbp_photo_count=30, gbp_has_posts=True, has_virtual_tour=True,
+        network_affiliation="Century 21",
+    )
+    score, details = compute_lead_score(a)
+    assert score == 0.0
+
+
+def test_suggest_offers_photo_when_few_photos():
+    """Agency with few GBP photos should get photo offer."""
+    a = Agency(name="Test", address="Paris", source="google_maps", gbp_photo_count=2,
+               site_quality="modern", has_virtual_tour=True)
+    score, details = compute_lead_score(a)
+    offers = suggest_offers(a, details)
+    assert OFFER_PHOTO in offers
+
+
+def test_suggest_offers_site_when_outdated_site():
+    """Agency with outdated site should get site offer."""
+    a = Agency(name="Test", address="Paris", source="google_maps",
+               gbp_photo_count=25, site_quality="outdated", has_virtual_tour=False)
+    score, details = compute_lead_score(a)
+    offers = suggest_offers(a, details)
+    assert OFFER_SITE in offers
+
+
+def test_suggest_offers_site_when_no_virtual_tour():
+    """Agency with no virtual tour should get site offer."""
+    a = Agency(name="Test", address="Paris", source="google_maps",
+               gbp_photo_count=25, site_quality="modern", has_virtual_tour=False)
+    score, details = compute_lead_score(a)
+    offers = suggest_offers(a, details)
+    assert OFFER_SITE in offers
+
+
+def test_virtual_tour_field_in_model():
+    """has_virtual_tour field round-trips correctly."""
+    a = Agency(name="Test", address="Paris", source="google_maps", has_virtual_tour=True)
+    d = a.model_dump()
+    a2 = Agency(**d)
+    assert a2.has_virtual_tour is True
 
 
 def test_save_and_load_agencies_round_trip():

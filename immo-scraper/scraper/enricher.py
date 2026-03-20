@@ -67,6 +67,39 @@ _H3_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# Virtual tour detection
+# ---------------------------------------------------------------------------
+
+_VIRTUAL_TOUR_PATTERNS = [
+    r'matterport\.com',
+    r'my\.matterport',
+    r'visite[\s\-_]*virtuelle',
+    r'visite[\s\-_]*3d',
+    r'visite[\s\-_]*360',
+    r'visite[\s\-_]*interactive',
+    r'vue[\s\-_]*360',
+    r'tour[\s\-_]*360',
+    r'virtual[\s\-_]*tour',
+    r'nodalview\.com',
+    r'klapty\.com',
+    r'ricoh360\.com',
+    r'kuula\.co',
+    r'floorfy\.com',
+    r'giraffe360',
+    r'istaging\.com',
+    r'zillow\.com/view/.*3d',
+    r'panorama[\s\-_]*360',
+    r'<iframe[^>]*(?:matterport|nodalview|klapty|kuula|floorfy|giraffe360)',
+]
+
+_VIRTUAL_TOUR_RE = re.compile('|'.join(_VIRTUAL_TOUR_PATTERNS), re.IGNORECASE)
+
+
+def detect_virtual_tour(html: str) -> bool:
+    """Detect if the website has virtual tour / 360° / Matterport content."""
+    return bool(_VIRTUAL_TOUR_RE.search(html))
+
 
 def extract_agent_names_from_html(html: str) -> list[str]:
     """Extract potential agent/director names from HTML."""
@@ -100,6 +133,7 @@ async def _enrich_agency(session: BrowserSession, agency: Agency) -> Agency:
 
         agency.agents_names = extract_agent_names_from_html(html)
         agency.has_blog = bool(re.search(r'/blog|/actualit|/article', html, re.IGNORECASE))
+        agency.has_virtual_tour = detect_virtual_tour(html)
         agency.site_quality = assess_site_quality(html)
         agency.is_mobile_friendly = 'name="viewport"' in html.lower()
         agency.enrichment_status = EnrichmentStatus.ENRICHED

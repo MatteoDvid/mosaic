@@ -161,6 +161,7 @@
     var status = document.getElementById("filter-status").value;
     var network = document.getElementById("filter-network").value;
     var scoreRange = document.getElementById("filter-score").value;
+    var offerFilter = document.getElementById("filter-offer").value;
 
     filtered = agencies.filter(function (ag) {
       if (search && ag.name.toLowerCase().indexOf(search) === -1 &&
@@ -173,6 +174,9 @@
         var hi = parseInt(parts[1], 10);
         var score = ag.lead_score || 0;
         if (score < lo || score > hi) return false;
+      }
+      if (offerFilter && ag.suggested_offers) {
+        if (ag.suggested_offers.indexOf(offerFilter) === -1) return false;
       }
       return true;
     });
@@ -325,6 +329,17 @@
     if (ag.siret) html += detailRow("SIRET", ag.siret);
     html += "</div>";
 
+    // --- Suggested offers section ---
+    if (ag.suggested_offers && ag.suggested_offers.length > 0) {
+      html += '<div class="detail-section">';
+      html += "<h3>Offres sugg\u00e9r\u00e9es</h3>";
+      html += '<div class="offer-badges">';
+      ag.suggested_offers.forEach(function (o) {
+        html += '<span class="offer-badge">' + escHtml(o) + "</span>";
+      });
+      html += "</div></div>";
+    }
+
     // --- Google / Network section ---
     html += '<div class="detail-section">';
     html += "<h3>Google & R\u00e9seau</h3>";
@@ -332,6 +347,7 @@
     html += detailRow("Avis", ag.google_review_count != null ? ag.google_review_count : "--");
     html += detailRow("R\u00e9seau", ag.network_affiliation || "ind\u00e9pendant");
     if (ag.site_quality) html += detailRow("Qualit\u00e9 site", ag.site_quality);
+    html += detailRow("Visite virtuelle", ag.has_virtual_tour ? "Oui" : "Non");
     if (ag.website_tech) html += detailRow("Technologie", ag.website_tech);
     if (ag.director_name) html += detailRow("Directeur", ag.director_name);
     if (ag.year_founded) html += detailRow("Fond\u00e9e en", ag.year_founded);
@@ -378,6 +394,21 @@
       html += '<div class="detail-section">';
       html += "<h3>Description</h3>";
       html += '<p style="font-size:12px;color:#6b7280;">' + escHtml(ag.linkup_description) + "</p>";
+      html += "</div>";
+    }
+
+    // --- Generated emails section ---
+    if (ag.generated_emails && ag.generated_emails.length > 0) {
+      html += '<div class="detail-section">';
+      html += "<h3>Emails g\u00e9n\u00e9r\u00e9s</h3>";
+      ag.generated_emails.forEach(function (em, idx) {
+        html += '<div class="email-card">';
+        html += '<div class="email-offer-label">' + escHtml(em.offer_label || em.offer || "") + "</div>";
+        html += '<div class="email-subject">' + escHtml(em.subject) + "</div>";
+        html += '<div class="email-body">' + escHtml(em.body).replace(/\n/g, "<br>") + "</div>";
+        html += '<button class="btn-copy-email" data-idx="' + idx + '">Copier l\'email</button>';
+        html += "</div>";
+      });
       html += "</div>";
     }
 
@@ -432,6 +463,22 @@
     // Bind save button
     document.getElementById("btn-save-crm").addEventListener("click", function () {
       saveCRM(ag.slug);
+    });
+
+    // Bind copy email buttons
+    document.querySelectorAll(".btn-copy-email").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var idx = parseInt(btn.dataset.idx, 10);
+        var em = ag.generated_emails[idx];
+        if (em) {
+          var text = "Objet : " + em.subject + "\n\n" + em.body;
+          navigator.clipboard.writeText(text).then(function () {
+            btn.textContent = "Copi\u00e9 !";
+            showToast("Email copi\u00e9 dans le presse-papiers");
+            setTimeout(function () { btn.textContent = "Copier l'email"; }, 2000);
+          });
+        }
+      });
     });
   }
 
@@ -568,6 +615,7 @@
   document.getElementById("filter-status").addEventListener("change", applyFilters);
   document.getElementById("filter-network").addEventListener("change", applyFilters);
   document.getElementById("filter-score").addEventListener("change", applyFilters);
+  document.getElementById("filter-offer").addEventListener("change", applyFilters);
 
   function debounce(fn, delay) {
     var timer;

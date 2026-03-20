@@ -13,12 +13,18 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from models import Agency
+from scraper.lead_scorer import suggest_offers, OFFER_LABELS
+
 # ---------------------------------------------------------------------------
 # Paths (relative to immo-scraper root, since we run from there)
 # ---------------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 AGENCIES_JSON = DATA_DIR / "agences_immo.json"
+EMAILS_JSON = DATA_DIR / "emails_generated.json"
 CRM_JSON = DATA_DIR / "crm_contacts.json"
 COORDS_CACHE_JSON = DATA_DIR / "coords_cache.json"
 
@@ -170,6 +176,15 @@ async def list_agencies():
         if len(coords_cache) > old_cache_size:
             cache_dirty = True
 
+        # Compute suggested offers from score details
+        details = ag.get("lead_score_details", {})
+        try:
+            agency_obj = Agency(**ag)
+            offers = suggest_offers(agency_obj, details)
+        except Exception:
+            offers = []
+        offer_labels = [OFFER_LABELS.get(o, o) for o in offers]
+
         entry = {
             "slug": slug,
             "name": ag.get("name", ""),
@@ -183,6 +198,8 @@ async def list_agencies():
             "lead_score": ag.get("lead_score"),
             "director_name": ag.get("director_name", ""),
             "site_quality": ag.get("site_quality", ""),
+            "has_virtual_tour": ag.get("has_virtual_tour", False),
+            "suggested_offers": offer_labels,
             "lat": coords[0] if coords else None,
             "lng": coords[1] if coords else None,
             # CRM fields
@@ -223,8 +240,22 @@ async def get_agency(slug: str):
         "history": [],
     })
 
+    # Load generated emails for this agency
+    emails = _load_json(EMAILS_JSON) if EMAILS_JSON.exists() else []
+    agency_emails = [e for e in emails if e.get("agency_slug") == slug or e.get("agency_name") == agency.get("name")]
+
+    # Compute suggested offers
+    details = agency.get("lead_score_details", {})
+    try:
+        agency_obj = Agency(**agency)
+        offers = suggest_offers(agency_obj, details)
+    except Exception:
+        offers = []
+    offer_labels = [OFFER_LABELS.get(o, o) for o in offers]
+
     return {**agency, "lat": coords[0] if coords else None,
-            "lng": coords[1] if coords else None, "crm": crm_data}
+            "lng": coords[1] if coords else None, "crm": crm_data,
+            "generated_emails": agency_emails, "suggested_offers": offer_labels}
 
 
 class ContactUpdate(BaseModel):

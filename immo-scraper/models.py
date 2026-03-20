@@ -47,6 +47,7 @@ class Agency(BaseModel):
     # Enrichment
     agents_names: list[str] = Field(default_factory=list)
     has_blog: Optional[bool] = None
+    has_virtual_tour: Optional[bool] = None  # Matterport, 360°, visite virtuelle detected
     site_quality: Optional[str] = None  # "modern" | "dated" | "outdated" | "none"
     is_mobile_friendly: Optional[bool] = None
     gbp_photo_count: Optional[int] = None
