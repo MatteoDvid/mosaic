@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Immo CRM - Gestion des agences</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <!-- Leaflet MarkerCluster CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <!-- App CSS -->
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+  <!-- ================================================================== -->
+  <!-- LEFT SIDEBAR                                                       -->
+  <!-- ================================================================== -->
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <h1>
+        <span class="logo-icon">IM</span>
+        Immo CRM
+      </h1>
+      <div class="stats-row" id="stats-bar">
+        <!-- Filled by JS -->
+      </div>
+    </div>
+
+    <div id="filters">
+      <input type="text" id="filter-search" placeholder="Rechercher une agence..." autocomplete="off" />
+      <div class="filter-row">
+        <select id="filter-status">
+          <option value="">Tous les statuts</option>
+          <option value="not_contacted">Pas contact&eacute;</option>
+          <option value="contacted">Contact&eacute;</option>
+          <option value="waiting">En attente</option>
+          <option value="responded">R&eacute;pondu</option>
+          <option value="converted">Converti</option>
+          <option value="not_interested">Pas int&eacute;ress&eacute;</option>
+        </select>
+        <select id="filter-network">
+          <option value="">Tous les r&eacute;seaux</option>
+        </select>
+      </div>
+      <div class="filter-row">
+        <select id="filter-score">
+          <option value="">Tous les scores</option>
+          <option value="80-100">80 - 100</option>
+          <option value="60-79">60 - 79</option>
+          <option value="40-59">40 - 59</option>
+          <option value="0-39">0 - 39</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="view-toggle">
+      <button id="btn-map-view" class="active" data-view="map">Carte</button>
+      <button id="btn-list-view" data-view="list">Liste</button>
+    </div>
+
+    <div id="agency-list">
+      <div class="loading-spinner"></div>
+    </div>
+
+    <div id="table-view">
+      <table id="agencies-table">
+        <thead>
+          <tr>
+            <th data-sort="name">Nom <span class="sort-arrow"></span></th>
+            <th data-sort="lead_score">Score <span class="sort-arrow"></span></th>
+            <th data-sort="status">Statut <span class="sort-arrow"></span></th>
+            <th data-sort="network_affiliation">R&eacute;seau <span class="sort-arrow"></span></th>
+            <th data-sort="last_contact_date">Contact <span class="sort-arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+
+    <div id="list-count"></div>
+  </div>
+
+  <!-- ================================================================== -->
+  <!-- MAIN MAP AREA                                                      -->
+  <!-- ================================================================== -->
+  <div id="main">
+    <div id="map"></div>
+  </div>
+
+  <!-- ================================================================== -->
+  <!-- OVERLAY (behind detail panel)                                      -->
+  <!-- ================================================================== -->
+  <div id="overlay"></div>
+
+  <!-- ================================================================== -->
+  <!-- RIGHT DETAIL PANEL                                                 -->
+  <!-- ================================================================== -->
+  <div id="detail-panel">
+    <div class="panel-header">
+      <h2 id="panel-title">--</h2>
+      <button class="panel-close" id="panel-close" title="Fermer (Echap)">&times;</button>
+    </div>
+    <div class="panel-body" id="panel-body">
+      <!-- Filled by JS -->
+    </div>
+  </div>
+
+  <!-- ================================================================== -->
+  <!-- TOAST                                                              -->
+  <!-- ================================================================== -->
+  <div id="toast"></div>
+
+  <!-- ================================================================== -->
+  <!-- KEYBOARD HINT                                                      -->
+  <!-- ================================================================== -->
+  <div class="kbd-hint">
+    <kbd>Echap</kbd> fermer &middot;
+    <kbd>&uarr;</kbd><kbd>&darr;</kbd> naviguer
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Leaflet MarkerCluster JS -->
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <!-- App JS -->
+  <script src="/static/app.js"></script>
+</body>
+</html>
