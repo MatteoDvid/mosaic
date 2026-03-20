@@ -54,6 +54,15 @@ class Agency(BaseModel):
     gbp_has_posts: Optional[bool] = None
     gbp_category: Optional[str] = None
 
+    # Linkup enrichment
+    director_name: Optional[str] = None
+    instagram_url: Optional[str] = None
+    facebook_url: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    website_tech: Optional[str] = None  # "WordPress" | "Wix" | "Squarespace" | "custom" etc.
+    year_founded: Optional[int] = None
+    linkup_description: Optional[str] = None
+
     # Lead scoring
     lead_score: Optional[float] = None
     lead_score_details: Optional[dict] = None
