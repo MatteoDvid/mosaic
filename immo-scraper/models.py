@@ -54,6 +54,10 @@ class Agency(BaseModel):
     gbp_has_posts: Optional[bool] = None
     gbp_category: Optional[str] = None
 
+    # Lead scoring
+    lead_score: Optional[float] = None
+    lead_score_details: Optional[dict] = None
+
     # Pipeline state
     screenshot_path: Optional[str] = None
     enrichment_status: EnrichmentStatus = EnrichmentStatus.SCRAPED

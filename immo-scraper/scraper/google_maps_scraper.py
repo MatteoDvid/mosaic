@@ -1,5 +1,8 @@
 """
-Google Maps scraper — searches "agence immobilière" for each configured zone.
+Google Maps scraper — searches multiple real-estate terms for each configured zone.
+
+Iterates over SEARCH_TERMS (French real-estate queries) and deduplicates
+results across terms.  Uses an adaptive grid that subdivides dense cells.
 
 Usage:
     python -m scraper.google_maps_scraper [--headed] [--zones paris-01,paris-02]
@@ -26,6 +29,25 @@ from scraper.pages_jaunes_scraper import parse_network_affiliation, normalize_ph
 from utils import load_agencies, save_agencies, random_delay
 
 console = Console(legacy_windows=False)
+
+# ---------------------------------------------------------------------------
+# Search terms — multiple French queries to maximise coverage
+# ---------------------------------------------------------------------------
+SEARCH_TERMS: list[str] = [
+    "agence immobilière",
+    "agent immobilier",
+    "gestion locative",
+    "transaction immobilière",
+    "mandataire immobilier",
+    "conseil immobilier",
+]
+
+# ---------------------------------------------------------------------------
+# Grid configuration
+# ---------------------------------------------------------------------------
+GRID_SIZE: int = 3            # initial NxN grid
+SUB_GRID_SIZE: int = 2        # subdivision NxN when a cell is dense
+GRID_SUBDIVIDE_THRESHOLD: int = 18  # subdivide cell if >= this many results
 
 # Concurrency limit for detail page fetches
 MAX_CONCURRENT_DETAILS = 3
@@ -145,9 +167,11 @@ async def _scroll_results_feed(page, results_pane) -> None:
 
 
 async def _collect_hrefs_at_point(session: BrowserSession, page, lat: float, lng: float,
-                                   seen_hrefs: set[str]) -> list[str]:
+                                   seen_hrefs: set[str],
+                                   search_term: str = "agence immobilière") -> list[str]:
     """Search at a single grid point, return new place hrefs not yet seen."""
-    url = f"https://www.google.com/maps/search/agence+immobili%C3%A8re/@{lat},{lng},15z"
+    encoded_term = quote(search_term)
+    url = f"https://www.google.com/maps/search/{encoded_term}/@{lat},{lng},15z"
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         await random_delay(2.0, 3.0)
@@ -320,21 +344,40 @@ async def _fetch_details_batch(session: BrowserSession, hrefs: list[str],
     return agencies
 
 
+def _cell_bounds(lat_min: float, lat_max: float, lng_min: float, lng_max: float,
+                 row: int, col: int, rows: int, cols: int
+                 ) -> tuple[float, float, float, float]:
+    """Return (cell_lat_min, cell_lat_max, cell_lng_min, cell_lng_max) for grid cell (row, col)."""
+    lat_step = (lat_max - lat_min) / rows
+    lng_step = (lng_max - lng_min) / cols
+    return (
+        lat_min + lat_step * row,
+        lat_min + lat_step * (row + 1),
+        lng_min + lng_step * col,
+        lng_min + lng_step * (col + 1),
+    )
+
+
 async def _scrape_zone(session: BrowserSession, zone_query: str, zone_slug: str,
                        bounds: tuple[float, float, float, float] | None = None) -> list[Agency]:
     agencies: list[Agency] = []
     seen_hrefs: set[str] = set()
+    all_hrefs: list[str] = []
 
     # Use geographic grid if bounds provided, else fall back to single text search
     if bounds:
         lat_min, lat_max, lng_min, lng_max = bounds
-        points = _grid_points(lat_min, lat_max, lng_min, lng_max)
-        console.log(f"[magenta]Google Maps[/magenta] >> {zone_query} ({len(points)}-point grid)")
+        points = _grid_points(lat_min, lat_max, lng_min, lng_max, rows=GRID_SIZE, cols=GRID_SIZE)
+        console.log(
+            f"[magenta]Google Maps[/magenta] >> {zone_slug} "
+            f"({len(points)}-point grid, {len(SEARCH_TERMS)} search terms)"
+        )
 
         # Use a single page for all grid searches (avoids re-accepting consent each time)
         grid_page = await session.new_page()
-        # Accept consent on first point
-        first_url = f"https://www.google.com/maps/search/agence+immobili%C3%A8re/@{points[0][0]},{points[0][1]},15z"
+        # Accept consent on first navigation
+        first_term = quote(SEARCH_TERMS[0])
+        first_url = f"https://www.google.com/maps/search/{first_term}/@{points[0][0]},{points[0][1]},15z"
         try:
             await grid_page.goto(first_url, wait_until="domcontentloaded", timeout=30_000)
             await random_delay(2.0, 3.0)
@@ -342,29 +385,73 @@ async def _scrape_zone(session: BrowserSession, zone_query: str, zone_slug: str,
         except Exception as e:
             console.log(f"[red]Consent error: {e}[/red]")
 
-        all_hrefs: list[str] = []
-        for lat, lng in points:
-            new_hrefs = await _collect_hrefs_at_point(session, grid_page, lat, lng, seen_hrefs)
-            all_hrefs.extend(new_hrefs)
-            console.log(f"[dim]  ({lat:.4f},{lng:.4f}) -> {len(new_hrefs)} new links (total {len(seen_hrefs)})[/dim]")
+        # Track per-cell result counts for adaptive subdivision
+        # cell key -> total result count across all search terms
+        cell_counts: dict[tuple[int, int], int] = {}
+
+        for term in SEARCH_TERMS:
+            console.log(f"[dim]  search term: \"{term}\"[/dim]")
+            for idx, (lat, lng) in enumerate(points):
+                row, col = divmod(idx, GRID_SIZE)
+                new_hrefs = await _collect_hrefs_at_point(
+                    session, grid_page, lat, lng, seen_hrefs, search_term=term
+                )
+                all_hrefs.extend(new_hrefs)
+                cell_counts[(row, col)] = cell_counts.get((row, col), 0) + len(new_hrefs)
+                console.log(
+                    f"[dim]    ({lat:.4f},{lng:.4f}) -> {len(new_hrefs)} new "
+                    f"(total {len(seen_hrefs)})[/dim]"
+                )
+
+        # --- Adaptive subdivision: re-search dense cells with finer grid ---
+        for (row, col), count in cell_counts.items():
+            if count >= GRID_SUBDIVIDE_THRESHOLD:
+                c_lat_min, c_lat_max, c_lng_min, c_lng_max = _cell_bounds(
+                    lat_min, lat_max, lng_min, lng_max, row, col, GRID_SIZE, GRID_SIZE
+                )
+                sub_points = _grid_points(
+                    c_lat_min, c_lat_max, c_lng_min, c_lng_max,
+                    rows=SUB_GRID_SIZE, cols=SUB_GRID_SIZE,
+                )
+                console.log(
+                    f"[yellow]  Subdividing cell ({row},{col}) — {count} results, "
+                    f"{len(sub_points)} sub-points[/yellow]"
+                )
+                for term in SEARCH_TERMS:
+                    for s_lat, s_lng in sub_points:
+                        new_hrefs = await _collect_hrefs_at_point(
+                            session, grid_page, s_lat, s_lng, seen_hrefs, search_term=term
+                        )
+                        all_hrefs.extend(new_hrefs)
+                        if new_hrefs:
+                            console.log(
+                                f"[dim]    sub ({s_lat:.4f},{s_lng:.4f}) -> "
+                                f"{len(new_hrefs)} new (total {len(seen_hrefs)})[/dim]"
+                            )
 
         await grid_page.close()
     else:
-        # Fallback: single text-based search (used when no bounds available)
-        search_url = f"https://www.google.com/maps/search/{quote(zone_query)}"
-        console.log(f"[magenta]Google Maps[/magenta] >> {zone_query} (text search)")
+        # Fallback: text-based search for each search term (no bounds available)
         grid_page = await session.new_page()
-        try:
-            await session.navigate(grid_page, search_url, wait_until="networkidle")
-            await _accept_google_consent(grid_page)
-            if not await grid_page.query_selector("div[role='feed']"):
-                await session.navigate(grid_page, search_url, wait_until="domcontentloaded")
-                await random_delay(2.0, 3.0)
-        except Exception as e:
-            console.log(f"[red]Nav error: {e}[/red]")
-            await grid_page.close()
-            return agencies
-        all_hrefs = await _collect_hrefs_at_point(session, grid_page, 0, 0, seen_hrefs)
+        consent_done = False
+        for term in SEARCH_TERMS:
+            search_url = f"https://www.google.com/maps/search/{quote(term + ' ' + zone_query)}"
+            console.log(f"[magenta]Google Maps[/magenta] >> {zone_query} \"{term}\" (text search)")
+            try:
+                await session.navigate(grid_page, search_url, wait_until="networkidle")
+                if not consent_done:
+                    await _accept_google_consent(grid_page)
+                    consent_done = True
+                if not await grid_page.query_selector("div[role='feed']"):
+                    await session.navigate(grid_page, search_url, wait_until="domcontentloaded")
+                    await random_delay(2.0, 3.0)
+            except Exception as e:
+                console.log(f"[red]Nav error: {e}[/red]")
+                continue
+            new_hrefs = await _collect_hrefs_at_point(
+                session, grid_page, 0, 0, seen_hrefs, search_term=term
+            )
+            all_hrefs.extend(new_hrefs)
         await grid_page.close()
 
     console.log(f"[cyan]{zone_slug}[/cyan]: {len(all_hrefs)} unique places found, fetching details...")
@@ -393,7 +480,7 @@ async def run(headless: bool = True, zone_slugs: list[str] | None = None) -> Non
         for _, slug, _cp, lat_min, lat_max, lng_min, lng_max in ZONES_GEO
     }
 
-    zones = [(f"agence immobilière {label}", slug) for label, slug, _cp in ZONES
+    zones = [(label, slug) for label, slug, _cp in ZONES
              if zone_slugs is None or slug in zone_slugs]
     zones_to_do = [(q, s) for q, s in zones if s not in already_scraped_zones]
 
