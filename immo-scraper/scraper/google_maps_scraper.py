@@ -23,7 +23,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from browser import BrowserSession
-from config import ZONES, ZONES_GEO, AGENCIES_JSON, SCROLL_DELAY_MIN, SCROLL_DELAY_MAX
+from config import ZONES, ZONES_GEO, AGENCIES_JSON, STATE_JSON, SCROLL_DELAY_MIN, SCROLL_DELAY_MAX
 from models import Agency
 from scraper.pages_jaunes_scraper import parse_network_affiliation, normalize_phone
 from utils import load_agencies, save_agencies, random_delay
@@ -273,14 +273,30 @@ async def _fetch_place_detail(session: BrowserSession, href: str,
                     if cat_span:
                         gbp_category = extract_gbp_category(await cat_span.inner_text())
 
-                # Photo count
+                # Photo count — try multiple selectors (Google changes DOM often)
                 gbp_photo_count = None
-                photo_btn = await detail_page.query_selector(
-                    "button[aria-label*='photo'], button[aria-label*='Photo']"
-                )
-                if photo_btn:
-                    photo_aria = await photo_btn.get_attribute("aria-label") or ""
-                    gbp_photo_count = extract_gbp_photo_count(photo_aria)
+                for photo_sel in [
+                    "button[aria-label*='photo']",
+                    "button[aria-label*='Photo']",
+                    "button[jsaction*='photos']",
+                    "a[data-photo-index]",
+                    "div[role='img'][aria-label*='photo']",
+                    "div[role='img'][aria-label*='Photo']",
+                ]:
+                    photo_btn = await detail_page.query_selector(photo_sel)
+                    if photo_btn:
+                        photo_aria = await photo_btn.get_attribute("aria-label") or ""
+                        gbp_photo_count = extract_gbp_photo_count(photo_aria)
+                        if gbp_photo_count is not None:
+                            break
+                # Fallback: count visible photo thumbnails in the gallery
+                if gbp_photo_count is None:
+                    photo_thumbs = await detail_page.query_selector_all(
+                        "button[class*='photo'], div[class*='gallery'] img, "
+                        "a[data-photo-index], div[jscontroller] img[decoding='async']"
+                    )
+                    if photo_thumbs:
+                        gbp_photo_count = len(photo_thumbs)
 
                 # GBP posts (updates tab)
                 gbp_has_posts = None
@@ -467,7 +483,7 @@ async def run(headless: bool = True, zone_slugs: list[str] | None = None) -> Non
     existing = load_agencies(AGENCIES_JSON)
     existing_slugs = {a.slug for a in existing}
 
-    state_path = Path("data/state.json")
+    state_path = Path(STATE_JSON)
     already_scraped_zones: set[str] = set()
     if state_path.exists():
         with open(state_path) as f:

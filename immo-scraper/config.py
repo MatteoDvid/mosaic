@@ -82,13 +82,17 @@ NAV_DELAY_MAX: float = 5.0
 SCROLL_DELAY_MIN: float = 0.5
 SCROLL_DELAY_MAX: float = 1.5
 
-# Paths
-DATA_DIR: str = "data"
-SCREENSHOTS_DIR: str = "screenshots"
-AGENCIES_JSON: str = f"{DATA_DIR}/agences_immo.json"
-AGENCIES_CSV: str = f"{DATA_DIR}/agences_immo.csv"
-EMAILS_JSON: str = f"{DATA_DIR}/emails_generated.json"
-STATE_JSON: str = f"{DATA_DIR}/state.json"
+# Paths — absolute, so scripts work regardless of cwd
+from pathlib import Path as _Path
+_BASE_DIR = _Path(__file__).resolve().parent
+
+DATA_DIR: str = str(_BASE_DIR / "data")
+SCREENSHOTS_DIR: str = str(_BASE_DIR / "screenshots")
+AGENCIES_JSON: str = str(_BASE_DIR / "data" / "agences_immo.json")
+AGENCIES_CSV: str = str(_BASE_DIR / "data" / "agences_immo.csv")
+EMAILS_JSON: str = str(_BASE_DIR / "data" / "emails_generated.json")
+EMAILS_CSV: str = str(_BASE_DIR / "data" / "emails_for_sending.csv")
+STATE_JSON: str = str(_BASE_DIR / "data" / "state.json")
 
 # User-agent pool
 USER_AGENTS: list[str] = [

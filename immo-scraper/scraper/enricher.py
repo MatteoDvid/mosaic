@@ -142,7 +142,7 @@ async def _enrich_agency(session: BrowserSession, agency: Agency) -> Agency:
         screenshots_path.mkdir(exist_ok=True)
         screenshot_file = screenshots_path / f"{agency.slug}.png"
         await page.screenshot(path=str(screenshot_file), full_page=False)
-        agency.screenshot_path = str(screenshot_file)
+        agency.screenshot_path = screenshot_file.as_posix()
         agency.enrichment_status = EnrichmentStatus.SCREENSHOT_DONE
 
     except Exception as e:

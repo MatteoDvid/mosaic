@@ -24,10 +24,10 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, AGENCIES_JSON, EMAILS_JSON
+from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, AGENCIES_JSON, EMAILS_JSON, EMAILS_CSV
 from models import Agency, EnrichmentStatus
 from scraper.lead_scorer import suggest_offers, OFFER_PHOTO, OFFER_SITE, OFFER_LABELS
-from utils import load_agencies
+from utils import load_agencies, export_emails_csv
 
 console = Console(legacy_windows=False)
 
@@ -180,7 +180,10 @@ def run(dry_run: bool = False, limit: Optional[int] = None, offer_filter: Option
 
             progress.advance(task)
 
+    # Auto-export to CSV for bulk sending
+    export_emails_csv(EMAILS_JSON, EMAILS_CSV)
     console.print(f"[bold green]Done. {len(existing_emails)} total emails in {EMAILS_JSON}[/bold green]")
+    console.print(f"[dim]CSV export: {EMAILS_CSV}[/dim]")
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from browser import BrowserSession
-from config import ZONES, AGENCIES_JSON, SCROLL_DELAY_MIN, SCROLL_DELAY_MAX
+from config import ZONES, AGENCIES_JSON, STATE_JSON, SCROLL_DELAY_MIN, SCROLL_DELAY_MAX
 from models import Agency, EnrichmentStatus
 from utils import load_agencies, save_agencies, random_delay
 
@@ -208,7 +208,7 @@ async def run(headless: bool = True, zone_slugs: list[str] | None = None) -> Non
     existing_slugs = {a.slug for a in existing}
     already_scraped_zones: set[str] = set()
 
-    state_path = Path("data/state.json")
+    state_path = Path(STATE_JSON)
     if state_path.exists():
         with open(state_path) as f:
             state = json.load(f)

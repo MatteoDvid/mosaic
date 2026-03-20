@@ -156,13 +156,34 @@ def export_csv(agencies: list[Agency], path: str) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(Agency.model_fields.keys())
     with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
         writer.writeheader()
         for agency in agencies:
             row = agency.model_dump()
+            # Serialize complex types to strings
             row["opening_hours"] = json.dumps(row["opening_hours"], ensure_ascii=False) if row["opening_hours"] else ""
-            row["agents_names"] = ", ".join(row["agents_names"])
+            row["agents_names"] = ", ".join(row["agents_names"]) if row["agents_names"] else ""
+            row["lead_score_details"] = json.dumps(row["lead_score_details"], ensure_ascii=False) if row["lead_score_details"] else ""
             writer.writerow(row)
+
+
+def export_emails_csv(emails_json_path: str, csv_path: str) -> None:
+    """Export generated emails to CSV for bulk sending tools."""
+    p = Path(emails_json_path)
+    if not p.exists():
+        return
+    with open(p, encoding="utf-8") as f:
+        emails = json.load(f)
+    if not emails:
+        return
+
+    Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = ["email_to", "agency_name", "offer", "offer_label", "subject", "body", "generated_at"]
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
+        writer.writeheader()
+        for em in emails:
+            writer.writerow({k: em.get(k, "") for k in fieldnames})
 
 
 # ---------------------------------------------------------------------------
