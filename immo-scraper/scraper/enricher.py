@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from browser import BrowserSession
 from config import AGENCIES_JSON, SCREENSHOTS_DIR
 from models import Agency, EnrichmentStatus
+from scraper.lead_scorer import score_all
 from utils import extract_emails_from_html, load_agencies, save_agencies, random_delay
 
 console = Console(legacy_windows=False)
@@ -148,6 +149,11 @@ async def run(headless: bool = True, limit: Optional[int] = None) -> None:
     for a in final:
         if a.enrichment_status == EnrichmentStatus.SCREENSHOT_DONE and a.email:
             a.enrichment_status = EnrichmentStatus.READY_FOR_EMAIL
+
+    # Compute lead scores after enrichment
+    console.print("[cyan]Computing lead scores...[/cyan]")
+    score_all(final)
+
     save_agencies(final, AGENCIES_JSON)
     console.print(f"[bold green]Enrichment complete. {len(to_enrich)} agencies processed.[/bold green]")
 
